@@ -1,492 +1,696 @@
-// App.js - Simplified UPI Scanner
 import React, { useState, useEffect } from 'react';
-import { StatusBar } from 'expo-status-bar';
-import { BarCodeScanner } from 'expo-barcode-scanner';
 import {
-  SafeAreaView,
+  ScrollView,
   View,
   Text,
-  TouchableOpacity,
   TextInput,
+  TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   Alert,
-  ScrollView
+  ActivityIndicator,
+  SafeAreaView,
+  StatusBar,
+  Platform,
 } from 'react-native';
 
-export default function App() {
-  const [screen, setScreen] = useState('home'); // 'home', 'scanner', 'manual', 'result'
-  const [hasPermission, setHasPermission] = useState(null);
-  const [scanned, setScanned] = useState(false);
+const API_BASE_URL = 'https://guard-x-backend.onrender.com';
+
+const App = () => {
   const [loading, setLoading] = useState(false);
-  
-  // Form data
-  const [upiId, setUpiId] = useState('');
-  const [amount, setAmount] = useState('');
-  const [result, setResult] = useState(null);
+  const [serverHealth, setServerHealth] = useState(null);
+  const [prediction, setPrediction] = useState(null);
+
+  const [formData, setFormData] = useState({
+    amount: '',
+    Date: new Date().toISOString().split('T')[0],
+    Time: new Date().toTimeString().split(' ')[0],
+    Transaction_Type: 'Online',
+    Payment_Gateway: 'Razorpay',
+    Transaction_Status: 'Completed',
+    Device_OS: Platform.OS === 'ios' ? 'iOS' : 'Android',
+    Merchant_Category: 'Electronics',
+    Transaction_Channel: 'Mobile',
+    Transaction_City: 'Mumbai',
+    Transaction_State: 'MH',
+    Transaction_Frequency: '',
+    Transaction_Amount_Deviation: '',
+  });
+
+  const transactionTypes = ['Online', 'In-Store', 'ATM'];
+  const paymentGateways = ['PayPal', 'Stripe', 'Square', 'Razorpay'];
+  const deviceOS = ['Android', 'iOS', 'Windows', 'MacOS'];
+  const merchantCategories = [
+    'Electronics',
+    'Groceries',
+    'Fashion',
+    'Travel',
+    'Entertainment',
+    'Healthcare',
+  ];
+  const transactionChannels = ['Mobile', 'Web', 'POS'];
 
   useEffect(() => {
-    (async () => {
-      const { status } = await BarCodeScanner.requestPermissionsAsync();
-      setHasPermission(status === 'granted');
-    })();
+    checkServerHealth();
   }, []);
 
-  // Mock fraud detection
-  const detectFraud = (data) => {
-    const riskScore = Math.random();
-    let label = 'low';
-    let reasons = ['Valid UPI format', 'Known bank domain'];
-    
-    if (riskScore > 0.7) {
-      label = 'high';
-      reasons = ['Suspicious pattern detected', 'Unknown merchant'];
-    } else if (riskScore > 0.4) {
-      label = 'medium';
-      reasons = ['New merchant', 'High amount'];
+  useEffect(() => {
+    if (formData.amount && formData.Transaction_Frequency) {
+      const amount = parseFloat(formData.amount);
+      const frequency = parseInt(formData.Transaction_Frequency);
+      
+      const estimatedAvg = frequency <= 3 ? 2000 : frequency <= 10 ? 15000 : 25000;
+      const deviation = Math.abs(amount - estimatedAvg);
+      
+      updateField('Transaction_Amount_Deviation', deviation.toFixed(0));
     }
+  }, [formData.amount, formData.Transaction_Frequency]);
 
-    return {
-      parsed: {
-        type: 'upi',
-        vpa: data.includes('@') ? data : 'merchant@okaxis',
-        payee: 'Demo Merchant',
-        amount: amount || '100'
-      },
-      risk: {
-        score: riskScore,
-        label: label,
-        reasons: reasons
-      }
-    };
+  const checkServerHealth = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/health`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await response.json();
+      setServerHealth(data);
+    } catch (error) {
+      console.error('Server health check failed:', error);
+      setServerHealth({ status: 'offline' });
+    }
   };
 
-  const handleBarCodeScanned = async ({ type, data }) => {
-    if (scanned) return;
-    setScanned(true);
-    setLoading(true);
-    
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    const fraudResult = detectFraud(data);
-    setResult(fraudResult);
-    setLoading(false);
-    setScreen('result');
-    setScanned(false);
+  const updateField = (field, value) => {
+    setFormData((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
   };
 
-  const handleManualCheck = async () => {
-    if (!upiId || !upiId.includes('@')) {
-      Alert.alert('Invalid UPI ID', 'Please enter a valid UPI ID (e.g., name@bank)');
+  const handlePredict = async () => {
+    if (!formData.amount || parseFloat(formData.amount) <= 0) {
+      Alert.alert('Validation Error', 'Please enter a valid transaction amount');
       return;
     }
-    
+
+    if (!formData.Transaction_Frequency || parseInt(formData.Transaction_Frequency) <= 0) {
+      Alert.alert('Validation Error', 'Please enter your monthly transaction frequency');
+      return;
+    }
+
     setLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    const fraudResult = detectFraud(upiId);
-    setResult(fraudResult);
-    setLoading(false);
-    setScreen('result');
+    setPrediction(null);
+
+    try {
+      const payload = {
+        amount: parseFloat(formData.amount),
+        Date: formData.Date,
+        Time: formData.Time,
+        Transaction_Type: formData.Transaction_Type,
+        Payment_Gateway: formData.Payment_Gateway,
+        Transaction_Status: formData.Transaction_Status,
+        Device_OS: formData.Device_OS,
+        Merchant_Category: formData.Merchant_Category,
+        Transaction_Channel: formData.Transaction_Channel,
+        Transaction_City: formData.Transaction_City,
+        Transaction_State: formData.Transaction_State,
+        Transaction_Frequency: parseInt(formData.Transaction_Frequency),
+        Transaction_Amount_Deviation: parseFloat(formData.Transaction_Amount_Deviation) || 0,
+      };
+
+      console.log('Sending prediction request:', payload);
+
+      const response = await fetch(`${API_BASE_URL}/predict`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('Prediction result:', result);
+      setPrediction(result);
+
+      Alert.alert(
+        result.fraud_prediction === 1 ? '⚠️ Fraud Detected' : '✅ Legitimate Transaction',
+        `Risk Level: ${result.risk_level}\nFraud Probability: ${(
+          result.fraud_probability * 100
+        ).toFixed(1)}%`,
+        [{ text: 'OK' }]
+      );
+    } catch (error) {
+      console.error('Prediction error:', error);
+      Alert.alert(
+        'Connection Error',
+        'Failed to get prediction. Please check your internet connection.',
+        [
+          { text: 'Retry', onPress: checkServerHealth },
+          { text: 'Cancel', style: 'cancel' },
+        ]
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handlePay = () => {
-    Alert.alert('Payment', 'Redirecting to payment gateway...\n(This would open your UPI app)');
+  const resetForm = () => {
+    setFormData({
+      amount: '',
+      Date: new Date().toISOString().split('T')[0],
+      Time: new Date().toTimeString().split(' ')[0],
+      Transaction_Type: 'Online',
+      Payment_Gateway: 'Razorpay',
+      Transaction_Status: 'Completed',
+      Device_OS: Platform.OS === 'ios' ? 'iOS' : 'Android',
+      Merchant_Category: 'Electronics',
+      Transaction_Channel: 'Mobile',
+      Transaction_City: 'Mumbai',
+      Transaction_State: 'MH',
+      Transaction_Frequency: '',
+      Transaction_Amount_Deviation: '',
+    });
+    setPrediction(null);
   };
 
-  // HOME SCREEN
-  if (screen === 'home') {
-    return (
-      <SafeAreaView style={styles.container}>
-        <Text style={styles.title}>🔒 Secure UPI Scanner</Text>
-        <Text style={styles.subtitle}>Detect fraud before you pay</Text>
-
-        <TouchableOpacity 
-          style={styles.primaryBtn} 
-          onPress={() => setScreen('scanner')}
-        >
-          <Text style={styles.primaryBtnText}>📷 Scan QR Code</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity 
-          style={styles.secondaryBtn} 
-          onPress={() => setScreen('manual')}
-        >
-          <Text style={styles.secondaryBtnText}>✍️ Enter UPI ID</Text>
-        </TouchableOpacity>
-
-        <View style={{flex: 1}} />
-        <Text style={styles.footer}>Fraud detection powered by ML</Text>
-        <StatusBar style="auto" />
-      </SafeAreaView>
-    );
-  }
-
-  // SCANNER SCREEN
-  if (screen === 'scanner') {
-    if (hasPermission === null) {
-      return (
-        <View style={styles.center}>
-          <Text>Requesting camera permission...</Text>
-        </View>
-      );
+  const getRiskColor = (riskLevel) => {
+    switch (riskLevel) {
+      case 'HIGH': return '#ef4444';
+      case 'MEDIUM': return '#f59e0b';
+      case 'LOW': return '#10b981';
+      default: return '#6b7280';
     }
-    
-    if (hasPermission === false) {
-      return (
-        <View style={styles.center}>
-          <Text style={styles.errorText}>Camera permission denied</Text>
-          <TouchableOpacity style={styles.ghostBtn} onPress={() => setScreen('home')}>
-            <Text style={styles.ghostBtnText}>Go Back</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
+  };
 
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.scannerBox}>
-          <BarCodeScanner
-            onBarCodeScanned={scanned ? undefined : handleBarCodeScanned}
-            style={StyleSheet.absoluteFillObject}
-          />
-          <View style={styles.scannerOverlay}>
-            <View style={styles.scanFrame} />
-            <Text style={styles.scanHint}>Align QR code within frame</Text>
+  const getRiskBgColor = (riskLevel) => {
+    switch (riskLevel) {
+      case 'HIGH': return '#fee2e2';
+      case 'MEDIUM': return '#fef3c7';
+      case 'LOW': return '#d1fae5';
+      default: return '#f3f4f6';
+    }
+  };
+
+  const getFrequencyHelper = () => {
+    const freq = parseInt(formData.Transaction_Frequency);
+    if (!freq) return '';
+    if (freq <= 3) return '🔴 Low frequency - First time or rare user';
+    if (freq <= 10) return '🟡 Normal frequency - Regular user';
+    return '🟢 High frequency - Active user';
+  };
+
+  const OptionButton = ({ label, selected, onPress }) => (
+    <TouchableOpacity
+      style={[styles.optionButton, selected && styles.optionButtonActive]}
+      onPress={onPress}
+    >
+      <Text
+        style={[
+          styles.optionButtonText,
+          selected && styles.optionButtonTextActive,
+        ]}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="#f3f4f6" />
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.headerIcon}>🛡️</Text>
+            <Text style={styles.headerTitle}>Guard-X</Text>
+          </View>
+          <View
+            style={[
+              styles.statusBadge,
+              {
+                backgroundColor:
+                  serverHealth?.status === 'healthy' ? '#10b981' : '#ef4444',
+              },
+            ]}
+          >
+            <Text style={styles.statusText}>
+              ● {serverHealth?.status === 'healthy' ? 'Online' : 'Offline'}
+            </Text>
           </View>
         </View>
 
-        {loading && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#4b6cff" />
-            <Text style={styles.loadingText}>Analyzing QR code...</Text>
+        {/* Prediction Result */}
+        {prediction && (
+          <View
+            style={[
+              styles.resultCard,
+              { borderLeftColor: getRiskColor(prediction.risk_level) },
+            ]}
+          >
+            <Text style={styles.resultTitle}>
+              {prediction.fraud_prediction === 1
+                ? '⚠️ FRAUD DETECTED'
+                : '✅ LEGITIMATE TRANSACTION'}
+            </Text>
+            <View style={styles.resultDetails}>
+              <View style={styles.resultRow}>
+                <Text style={styles.resultLabel}>Risk Level:</Text>
+                <View
+                  style={[
+                    styles.riskBadge,
+                    { backgroundColor: getRiskBgColor(prediction.risk_level) },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.riskBadgeText,
+                      { color: getRiskColor(prediction.risk_level) },
+                    ]}
+                  >
+                    {prediction.risk_level}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.resultRow}>
+                <Text style={styles.resultLabel}>Fraud Probability:</Text>
+                <Text style={styles.resultValue}>
+                  {(prediction.fraud_probability * 100).toFixed(1)}%
+                </Text>
+              </View>
+            </View>
           </View>
         )}
 
-        <TouchableOpacity 
-          style={styles.ghostBtn} 
-          onPress={() => {
-            setScanned(false);
-            setScreen('home');
-          }}
-        >
-          <Text style={styles.ghostBtnText}>Cancel</Text>
-        </TouchableOpacity>
-      </SafeAreaView>
-    );
-  }
+        {/* Form */}
+        <View style={styles.formCard}>
+          <Text style={styles.sectionTitle}>Transaction Information</Text>
 
-  // MANUAL ENTRY SCREEN
-  if (screen === 'manual') {
-    return (
-      <SafeAreaView style={styles.container}>
-        <Text style={styles.h2}>Check UPI ID</Text>
-        
-        <TextInput
-          style={styles.input}
-          placeholder="UPI ID (e.g., name@paytm)"
-          value={upiId}
-          onChangeText={setUpiId}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        
-        <TextInput
-          style={styles.input}
-          placeholder="Amount (optional)"
-          value={amount}
-          onChangeText={setAmount}
-          keyboardType="numeric"
-        />
-
-        <TouchableOpacity 
-          style={styles.primaryBtn} 
-          onPress={handleManualCheck}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.primaryBtnText}>Check for Fraud</Text>
-          )}
-        </TouchableOpacity>
-
-        <TouchableOpacity 
-          style={styles.ghostBtn} 
-          onPress={() => setScreen('home')}
-        >
-          <Text style={styles.ghostBtnText}>Back</Text>
-        </TouchableOpacity>
-      </SafeAreaView>
-    );
-  }
-
-  // RESULT SCREEN
-  if (screen === 'result' && result) {
-    const { parsed, risk } = result;
-    
-    const getColorForLabel = (label) => {
-      if (label === 'low') return '#1f9d55';
-      if (label === 'medium') return '#d4a017';
-      return '#c53030';
-    };
-
-    const riskColor = getColorForLabel(risk.label);
-
-    return (
-      <SafeAreaView style={styles.container}>
-        <ScrollView style={{width: '100%'}} contentContainerStyle={styles.scrollContent}>
-          
-          {/* Risk Score Card */}
-          <View style={[styles.riskCard, {borderColor: riskColor}]}>
-            <Text style={[styles.riskLabel, {color: riskColor}]}>
-              {risk.label.toUpperCase()} RISK
+          {/* Amount */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              Transaction Amount (₹) <Text style={styles.required}>*</Text>
             </Text>
-            <Text style={styles.riskScore}>
-              Score: {(risk.score * 100).toFixed(0)}%
+            <TextInput
+              style={styles.input}
+              value={formData.amount}
+              onChangeText={(value) => updateField('amount', value)}
+              keyboardType="decimal-pad"
+              placeholder="Enter amount"
+              placeholderTextColor="#9ca3af"
+            />
+            {formData.amount && (
+              <Text style={styles.helperText}>
+                ≈ ₹{parseFloat(formData.amount).toLocaleString('en-IN')}
+              </Text>
+            )}
+          </View>
+
+          {/* Transaction Frequency */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              Monthly Transaction Frequency <Text style={styles.required}>*</Text>
+            </Text>
+            <Text style={styles.helperText}>
+              How many transactions do you typically make per month?
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={formData.Transaction_Frequency}
+              onChangeText={(value) => updateField('Transaction_Frequency', value)}
+              keyboardType="number-pad"
+              placeholder="e.g., 10"
+              placeholderTextColor="#9ca3af"
+            />
+            {formData.Transaction_Frequency && (
+              <Text style={[styles.helperText, { marginTop: 4 }]}>
+                {getFrequencyHelper()}
+              </Text>
+            )}
+          </View>
+
+          {/* Amount Deviation */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              Amount Deviation (₹)
+            </Text>
+            <Text style={styles.helperText}>
+              Difference from your usual transaction amount
+            </Text>
+            <TextInput
+              style={[styles.input, styles.inputDisabled]}
+              value={formData.Transaction_Amount_Deviation}
+              editable={false}
+              placeholder="Auto-calculated"
+              placeholderTextColor="#9ca3af"
+            />
+            <Text style={styles.helperText}>
+              💡 Auto-calculated based on amount & frequency
             </Text>
           </View>
 
-          {/* Payment Details */}
-          <View style={styles.detailBox}>
-            <Text style={styles.detailTitle}>Payment Details</Text>
-            <Text style={styles.detailLine}>Payee: {parsed.payee}</Text>
-            <Text style={styles.detailLine}>UPI ID: {parsed.vpa}</Text>
-            <Text style={styles.detailLine}>Amount: ₹{parsed.amount}</Text>
+          {/* Transaction Type */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Transaction Type</Text>
+            <View style={styles.buttonGroup}>
+              {transactionTypes.map((type) => (
+                <OptionButton
+                  key={type}
+                  label={type}
+                  selected={formData.Transaction_Type === type}
+                  onPress={() => updateField('Transaction_Type', type)}
+                />
+              ))}
+            </View>
           </View>
 
-          {/* Risk Analysis */}
-          <View style={styles.detailBox}>
-            <Text style={styles.detailTitle}>Risk Analysis</Text>
-            {risk.reasons.map((reason, index) => (
-              <Text key={index} style={styles.reasonItem}>• {reason}</Text>
-            ))}
+          {/* Payment Gateway */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Payment Gateway</Text>
+            <View style={styles.buttonGroup}>
+              {paymentGateways.map((gateway) => (
+                <OptionButton
+                  key={gateway}
+                  label={gateway}
+                  selected={formData.Payment_Gateway === gateway}
+                  onPress={() => updateField('Payment_Gateway', gateway)}
+                />
+              ))}
+            </View>
+          </View>
+
+          {/* Device OS */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Device Operating System</Text>
+            <View style={styles.buttonGroup}>
+              {deviceOS.map((os) => (
+                <OptionButton
+                  key={os}
+                  label={os}
+                  selected={formData.Device_OS === os}
+                  onPress={() => updateField('Device_OS', os)}
+                />
+              ))}
+            </View>
+          </View>
+
+          {/* Merchant Category */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Merchant Category</Text>
+            <View style={styles.buttonGroup}>
+              {merchantCategories.map((category) => (
+                <OptionButton
+                  key={category}
+                  label={category}
+                  selected={formData.Merchant_Category === category}
+                  onPress={() => updateField('Merchant_Category', category)}
+                />
+              ))}
+            </View>
+          </View>
+
+          {/* Transaction Channel */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Transaction Channel</Text>
+            <View style={styles.buttonGroup}>
+              {transactionChannels.map((channel) => (
+                <OptionButton
+                  key={channel}
+                  label={channel}
+                  selected={formData.Transaction_Channel === channel}
+                  onPress={() => updateField('Transaction_Channel', channel)}
+                />
+              ))}
+            </View>
+          </View>
+
+          {/* Location */}
+          <View style={styles.row}>
+            <View style={[styles.inputGroup, styles.halfWidth]}>
+              <Text style={styles.label}>City</Text>
+              <TextInput
+                style={styles.input}
+                value={formData.Transaction_City}
+                onChangeText={(value) => updateField('Transaction_City', value)}
+                placeholder="City"
+                placeholderTextColor="#9ca3af"
+              />
+            </View>
+            <View style={[styles.inputGroup, styles.halfWidth]}>
+              <Text style={styles.label}>State</Text>
+              <TextInput
+                style={styles.input}
+                value={formData.Transaction_State}
+                onChangeText={(value) => updateField('Transaction_State', value)}
+                placeholder="State"
+                placeholderTextColor="#9ca3af"
+              />
+            </View>
           </View>
 
           {/* Action Buttons */}
-          <TouchableOpacity 
-            style={[
-              styles.primaryBtn, 
-              {width: '100%', backgroundColor: risk.label === 'high' ? '#999' : '#4b6cff'}
-            ]} 
-            onPress={handlePay}
-            disabled={risk.label === 'high'}
-          >
-            <Text style={styles.primaryBtnText}>
-              {risk.label === 'high' ? '⚠️ Payment Blocked' : '✅ Proceed to Pay'}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.buttonContainer}>
+            <TouchableOpacity
+              style={[styles.button, styles.resetButton]}
+              onPress={resetForm}
+            >
+              <Text style={styles.resetButtonText}>🔄 Clear Form</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity 
-            style={[styles.secondaryBtn, {width: '100%'}]} 
-            onPress={() => Alert.alert('Fraud Reported', 'Thank you for reporting this.')}
-          >
-            <Text style={styles.secondaryBtnText}>🚨 Report Fraud</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.ghostBtn} 
-            onPress={() => {
-              setResult(null);
-              setUpiId('');
-              setAmount('');
-              setScreen('home');
-            }}
-          >
-            <Text style={styles.ghostBtnText}>Done</Text>
-          </TouchableOpacity>
-
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  return null;
-}
+            <TouchableOpacity
+              style={[
+                styles.button,
+                styles.predictButton,
+                loading && styles.buttonDisabled,
+              ]}
+              onPress={handlePredict}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#ffffff" size="small" />
+              ) : (
+                <Text style={styles.predictButtonText}>🛡️ Check Transaction</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    alignItems: 'center',
-    padding: 20,
-    backgroundColor: '#f7f9fc'
-  },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    marginTop: 40,
-    marginBottom: 8,
-    color: '#222'
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 40,
-    textAlign: 'center'
-  },
-  h2: {
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 20,
-    color: '#222',
-    alignSelf: 'flex-start'
-  },
-  primaryBtn: {
-    backgroundColor: '#4b6cff',
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    width: '100%',
-    alignItems: 'center',
-    marginVertical: 8,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    shadowOffset: {width: 0, height: 4}
-  },
-  primaryBtnText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 16
-  },
-  secondaryBtn: {
-    backgroundColor: '#eef2ff',
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    width: '100%',
-    alignItems: 'center',
-    marginVertical: 8
-  },
-  secondaryBtnText: {
-    color: '#4b6cff',
-    fontWeight: '600',
-    fontSize: 16
-  },
-  ghostBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    width: '100%',
-    alignItems: 'center',
-    marginVertical: 8
-  },
-  ghostBtnText: {
-    color: '#666',
-    fontSize: 16
-  },
-  footer: {
-    fontSize: 12,
-    color: '#999',
-    marginBottom: 20
-  },
-  scannerBox: {
-    width: '100%',
-    height: 400,
-    backgroundColor: '#000',
-    borderRadius: 16,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20
-  },
-  scannerOverlay: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  scanFrame: {
-    width: 250,
-    height: 250,
-    borderWidth: 3,
-    borderColor: '#4b6cff',
-    borderRadius: 12,
-    backgroundColor: 'transparent'
-  },
-  scanHint: {
-    color: '#fff',
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 20,
-    fontSize: 14
-  },
-  input: {
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#e6e9ef',
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: 12,
-    backgroundColor: '#fff',
-    fontSize: 16
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    marginVertical: 20
-  },
-  loadingText: {
-    marginTop: 10,
-    color: '#666'
-  },
-  errorText: {
-    color: '#c53030',
-    fontSize: 16,
-    marginBottom: 20,
-    textAlign: 'center'
+    backgroundColor: '#f3f4f6',
   },
   scrollContent: {
-    alignItems: 'center',
-    paddingBottom: 40
+    padding: 16,
+    paddingBottom: 40,
   },
-  riskCard: {
-    width: '100%',
-    borderWidth: 3,
-    borderRadius: 12,
-    padding: 20,
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 20,
-    backgroundColor: '#fff'
+    paddingTop: 10,
   },
-  riskLabel: {
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerIcon: {
+    fontSize: 28,
+    marginRight: 8,
+  },
+  headerTitle: {
     fontSize: 24,
-    fontWeight: '800'
+    fontWeight: 'bold',
+    color: '#111827',
   },
-  riskScore: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 8
-  },
-  detailBox: {
-    width: '100%',
-    backgroundColor: '#fff',
-    padding: 16,
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 12,
+  },
+  statusText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  resultCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 20,
+    borderLeftWidth: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  resultTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
     marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#eef2ff'
+    color: '#111827',
   },
-  detailTitle: {
-    fontWeight: '700',
+  resultDetails: {
+    gap: 12,
+  },
+  resultRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  resultLabel: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  resultValue: {
     fontSize: 16,
-    marginBottom: 12,
-    color: '#222'
+    fontWeight: '600',
+    color: '#111827',
   },
-  detailLine: {
-    color: '#333',
-    marginBottom: 6,
-    fontSize: 15
+  riskBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
-  reasonItem: {
-    color: '#444',
-    marginBottom: 6,
-    fontSize: 14
-  }
+  riskBadgeText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  formCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 20,
+    color: '#111827',
+  },
+  inputGroup: {
+    marginBottom: 20,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#374151',
+  },
+  required: {
+    color: '#ef4444',
+  },
+  input: {
+    backgroundColor: '#f9fafb',
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    color: '#111827',
+  },
+  inputDisabled: {
+    backgroundColor: '#e5e7eb',
+    color: '#6b7280',
+  },
+  helperText: {
+    fontSize: 12,
+    color: '#6b7280',
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  buttonGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  optionButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    backgroundColor: '#ffffff',
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  optionButtonActive: {
+    backgroundColor: '#3b82f6',
+    borderColor: '#3b82f6',
+  },
+  optionButtonText: {
+    fontSize: 14,
+    color: '#374151',
+    fontWeight: '500',
+  },
+  optionButtonTextActive: {
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  halfWidth: {
+    flex: 1,
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  button: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  resetButton: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+  },
+  resetButtonText: {
+    color: '#374151',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  predictButton: {
+    backgroundColor: '#3b82f6',
+  },
+  predictButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  buttonDisabled: {
+    opacity:'0.6'
+  },
 });
+
+export default App;
